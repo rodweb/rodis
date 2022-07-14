@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +18,14 @@ func main() {
 		fmt.Println("Error accepting connection: ", err.Error())
 		os.Exit(1)
 	}
-	var pong = []byte("+PONG\n")
-	conn.Write(pong)
+	var reader = bufio.NewReader(conn)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			break
+		}
+		fmt.Println("Line: ", string(line))
+		var pong = []byte("+PONG\n")
+		conn.Write(pong)
+	}
 }
