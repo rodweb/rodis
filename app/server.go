@@ -15,32 +15,69 @@ func main() {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
 	}
+	storage := NewStorage()
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			fmt.Println("Error accepting connection: ", err.Error())
+			fmt.Println("Failed to accept connection: ", err.Error())
 			os.Exit(1)
 		}
-		go handleConnection(conn)
+		go handleConnection(conn, storage)
 	}
 }
 
-func handleConnection(conn net.Conn) {
-	value, err := DecodeRESP(bufio.NewReader(conn))
-	if err != nil {
-		fmt.Println("Failed to decode RESP")
-		return
-	}
-	command := value.Array()[0].String()
-	args := value.Array()[1:]
+type Storage struct {
+	data map[string]string
+}
 
-	switch command {
-	case "ping":
-		conn.Write([]byte("+PONG\r\n"))
-	case "echo":
-		conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(args[0].String()), args[0].String())))
-	default:
-		conn.Write([]byte(fmt.Sprintf("-ERR unknown command '%s'\r\n", command)))
+func NewStorage() *Storage {
+	return &Storage{
+		data: make(map[string]string),
+	}
+}
+
+func (s *Storage) Set(key string, value string) {
+	s.data[key] = value
+}
+
+func (s *Storage) Get(key string) string {
+	return s.data[key]
+}
+
+func handleConnection(conn net.Conn, storage *Storage) {
+	defer conn.Close()
+
+	for {
+		if _, err := conn.Read([]byte{}); err != nil {
+			fmt.Println("Failed to read from client: ", err.Error())
+			continue
+		}
+		value, err := DecodeRESP(bufio.NewReader(conn))
+		if err != nil {
+			fmt.Println("Failed to decode RESP", err.Error())
+			return
+		}
+		command := value.Array()[0].String()
+		args := value.Array()[1:]
+
+		switch command {
+		case "ping":
+			conn.Write([]byte("+PONG\r\n"))
+		case "echo":
+			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(args[0].String()), args[0].String())))
+		case "set":
+			storage.Set(args[0].String(), args[1].String())
+			conn.Write([]byte("+OK\r\n"))
+		case "get":
+			value := storage.Get(args[0].String())
+			if value != "" {
+				conn.Write([]byte(fmt.Sprintf("+%s\r\n", value)))
+			} else {
+				conn.Write([]byte("$-1\r\n"))
+			}
+		default:
+			conn.Write([]byte(fmt.Sprintf("-ERR unknown command '%s'\r\n", command)))
+		}
 	}
 }
 
@@ -152,6 +189,5 @@ func readUntilCRLF(reader *bufio.Reader) ([]byte, error) {
 	if err != nil {
 		return []byte{}, err
 	}
-	fmt.Print(fmt.Printf("bytes: %s", bytes))
 	return bytes[:len(bytes)-2], nil
 }
