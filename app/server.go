@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"time"
 )
 
 func main() {
@@ -27,21 +28,36 @@ func main() {
 }
 
 type Storage struct {
-	data map[string]string
+	data map[string]ValueWithExpiry
 }
 
 func NewStorage() *Storage {
 	return &Storage{
-		data: make(map[string]string),
+		data: make(map[string]ValueWithExpiry),
 	}
 }
 
 func (s *Storage) Set(key string, value string) {
-	s.data[key] = value
+	s.data[key] = ValueWithExpiry{value: value}
 }
 
-func (s *Storage) Get(key string) string {
-	return s.data[key]
+func (s *Storage) SetWithExpiry(key string, value string, expiry time.Duration) {
+	s.data[key] = ValueWithExpiry{
+		value:     value,
+		expiresAt: time.Now().Add(expiry),
+	}
+}
+
+func (s *Storage) Get(key string) (string, bool) {
+	valueWithExpiry, ok := s.data[key]
+	if !ok {
+		return "", false
+	}
+	if valueWithExpiry.IsExpired() {
+		delete(s.data, key)
+		return "", false
+	}
+	return valueWithExpiry.value, true
 }
 
 func handleConnection(conn net.Conn, storage *Storage) {
@@ -66,12 +82,26 @@ func handleConnection(conn net.Conn, storage *Storage) {
 		case "echo":
 			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(args[0].String()), args[0].String())))
 		case "set":
-			storage.Set(args[0].String(), args[1].String())
+			if len(args) > 2 {
+				if args[2].String() == "px" {
+					expiry, err := strconv.Atoi(args[3].String())
+					if err != nil {
+						conn.Write([]byte(fmt.Sprintf("-ERR invalid PX value: %s\r\n", args[3].String())))
+						break
+					}
+					storage.SetWithExpiry(args[0].String(), args[1].String(), time.Duration(expiry)*time.Millisecond)
+				} else {
+					conn.Write([]byte(fmt.Sprintf("-ERR invalid option for set: %s\r\n", args[3].String())))
+					break
+				}
+			} else {
+				storage.Set(args[0].String(), args[1].String())
+			}
 			conn.Write([]byte("+OK\r\n"))
 		case "get":
-			value := storage.Get(args[0].String())
-			if value != "" {
-				conn.Write([]byte(fmt.Sprintf("+%s\r\n", value)))
+			value, found := storage.Get(args[0].String())
+			if found {
+				conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)))
 			} else {
 				conn.Write([]byte("$-1\r\n"))
 			}
@@ -190,4 +220,16 @@ func readUntilCRLF(reader *bufio.Reader) ([]byte, error) {
 		return []byte{}, err
 	}
 	return bytes[:len(bytes)-2], nil
+}
+
+type ValueWithExpiry struct {
+	value     string
+	expiresAt time.Time
+}
+
+func (v ValueWithExpiry) IsExpired() bool {
+	if v.expiresAt.IsZero() {
+		return false
+	}
+	return v.expiresAt.Before(time.Now())
 }
